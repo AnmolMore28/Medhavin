@@ -23,7 +23,7 @@ print("You said:", user_text)
 
 # Send to LLM
 response = ollama.chat(
-    model="llama3",
+    model="tinyllama",
     messages=[{"role": "user", "content": user_text}]
 )
 
