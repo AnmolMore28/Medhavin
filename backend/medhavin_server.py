@@ -1,13 +1,14 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from backend.medhavin_agent import run_medhavin
+from medhavin_agent import run_medhavin
 import os
 import sounddevice as sd
 import numpy as np
 from scipy.io.wavfile import write
 import whisper
 import uuid
+import time
 # -------------------------
 # Configuration
 # -------------------------
@@ -18,7 +19,41 @@ os.makedirs(BASE_DIR, exist_ok=True)
 app = FastAPI()
 whisper_model = whisper.load_model("base")
 SAMPLE_RATE = 16000
-RECORD_SECONDS = 5
+def record_until_silence():
+    silence_threshold = 500
+    silence_limit_seconds = 3
+    chunk_duration = 0.5
+
+    frames = []
+    silent_chunks = 0
+    required_silent_chunks = int(silence_limit_seconds / chunk_duration)
+
+    print("Listening...")
+
+    while True:
+        chunk = sd.rec(
+            int(chunk_duration * SAMPLE_RATE),
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16"
+        )
+        sd.wait()
+
+        frames.append(chunk)
+
+        volume = np.abs(chunk).mean()
+
+        if volume < silence_threshold:
+            silent_chunks += 1
+        else:
+            silent_chunks = 0
+
+        if silent_chunks >= required_silent_chunks:
+            break
+
+    print("Silence detected. Stopping.")
+
+    return np.concatenate(frames)
 # -------------------------
 # Enable CORS
 # -------------------------
@@ -58,24 +93,17 @@ def ask(request: PromptRequest):
             "message": str(e)
         }
 
+
 # -------------------------
 # Health Check (optional)
 # -------------------------
 @app.post("/record")
 def record_and_process():
     try:
-        print("Recording...")
-
-        recording = sd.rec(
-            int(RECORD_SECONDS * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="int16"
-        )
-        sd.wait()
+        recording = record_until_silence()
 
         filename = f"temp_{uuid.uuid4().hex}.wav"
-        filepath = os.path.join(BASE_DIR, filename)
+        filepath = os.path.join(os.path.dirname(__file__), filename)
 
         write(filepath, SAMPLE_RATE, recording)
 
@@ -95,7 +123,7 @@ def record_and_process():
             "transcript": transcript,
             "agent": agent_result
         }
-
+        
     except Exception as e:
         return {
             "status": "error",
