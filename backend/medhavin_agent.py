@@ -3,7 +3,61 @@ import os
 import subprocess
 import shutil
 import json
+import pkg_resources
+import subprocess
 
+# =========================
+# LANGUAGE TEMPLATES
+# =========================
+
+LANGUAGE_TEMPLATES = {
+    "python": ["main.py", "requirements.txt"],
+    "node": ["package.json", "index.js"],
+    "cpp": ["main.cpp", "CMakeLists.txt"],
+    "java": ["Main.java"]
+}
+# =========================
+# DEPENDENCY MANAGEMENT
+# =========================
+
+def get_installed_packages():
+    installed = {}
+    for pkg in pkg_resources.working_set:
+        installed[pkg.key] = pkg.version
+    return installed
+
+
+def install_dependency(package):
+    result = subprocess.run(
+        ["pip", "install", package],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode == 0:
+        return f"Installed: {package}"
+    else:
+        return f"Failed to install {package}:\n{result.stderr}"
+
+
+def manage_dependencies(project_name, dependency_text):
+    installed = get_installed_packages()
+    responses = []
+
+    deps = dependency_text.strip().split("\n")
+
+    for dep in deps:
+        dep = dep.strip()
+        if not dep:
+            continue
+
+        pkg_name = dep.split("==")[0].split(">=")[0].lower()
+
+        if pkg_name in installed:
+            responses.append(f"{pkg_name} already installed ({installed[pkg_name]})")
+        else:
+            responses.append(install_dependency(dep))
+
+    return "\n".join(responses)
 # =========================
 # PROJECT ROOT
 # =========================
@@ -79,28 +133,69 @@ def create_directory(dirname):
     return f"Directory created: {path}"
 
 def list_files():
-    file_list = []
+    items = []
     for root, dirs, files in os.walk(PROJECT_ROOT):
-        for name in files:
-            relative = os.path.relpath(os.path.join(root, name), PROJECT_ROOT)
-            file_list.append(relative)
-    return "\n".join(file_list) if file_list else "No files yet."
+        for d in dirs:
+            relative = os.path.relpath(os.path.join(root, d), PROJECT_ROOT)
+            items.append(f"[DIR] {relative}")
+        for f in files:
+            relative = os.path.relpath(os.path.join(root, f), PROJECT_ROOT)
+            items.append(f"[FILE] {relative}")
+    return "\n".join(items) if items else "Workspace empty."
 
-def run_python(path):
+def run_file(path):
     full_path = os.path.join(PROJECT_ROOT, path)
+
     if not os.path.exists(full_path):
         return "File does not exist."
 
-    result = subprocess.run(
-        ["python", full_path],
-        capture_output=True,
-        text=True
-    )
+    ext = os.path.splitext(full_path)[1]
+
+    if ext == ".py":
+        cmd = ["python", full_path]
+
+    elif ext == ".js":
+        cmd = ["node", full_path]
+
+    elif ext == ".cpp":
+        exe_path = full_path.replace(".cpp", ".exe")
+        compile_cmd = ["g++", full_path, "-o", exe_path]
+        compile = subprocess.run(compile_cmd, capture_output=True, text=True)
+        if compile.returncode != 0:
+            return f"Compilation failed:\n{compile.stderr}"
+        cmd = [exe_path]
+
+    elif ext == ".java":
+        compile = subprocess.run(["javac", full_path], capture_output=True, text=True)
+        if compile.returncode != 0:
+            return f"Compilation failed:\n{compile.stderr}"
+        class_name = os.path.splitext(os.path.basename(full_path))[0]
+        cmd = ["java", "-cp", os.path.dirname(full_path), class_name]
+
+    else:
+        return "Unsupported file type."
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode == 0:
         return f"Execution successful:\n{result.stdout}"
     else:
         return f"Execution failed:\n{result.stderr}"
+
+# =========================
+# PROJECT BUILDER
+# =========================
+
+def create_project_structure(project_name, language):
+    if language not in LANGUAGE_TEMPLATES:
+        return f"Unsupported language: {language}"
+
+    create_directory(project_name)
+
+    for filename in LANGUAGE_TEMPLATES[language]:
+        write_file(f"{project_name}/{filename}", "")
+
+    return f"Project '{project_name}' created with {language} template."
 
 # =========================
 # LLM INTERACTION
@@ -112,27 +207,50 @@ def ask_llama(prompt, context, history):
 You are Medhavin, an advanced AI coding copilot.
 
 You can use these actions:
+When user asks to create a project:
+1. Ask about goal first.
+2. Ask preferred programming language.
+3. Only after clarification, generate ACTION blocks.
+
+When creating projects:
+- Ask user which programming language or tech stack.
+- If not specified, suggest options based on project type.
+- Create folder structure appropriate to selected language.
+
+To create a project:
+ACTION: create_project
+PATH: project_name|language
+END
+
+To manage dependencies:
+ACTION: manage_dependencies
+PATH: project_name
+CONTENT:
+package1
+package2==version
+package3>=version
+END
 
 To write a file:
 ACTION: write_file
-PATH: filename.py
+PATH: project_name|language
 CONTENT:
 <code>
 END
 
 To read a file:
 ACTION: read_file
-PATH: filename.py
+PATH: project_name|language
 END
 
 To run a file:
-ACTION: run_python
-PATH: filename.py
+ACTION: run_file
+PATH: filename
 END
 
 To delete a file (by name only):
 ACTION: delete_file
-PATH: filename.py
+PATH: project_name|language
 END
 
 To delete a folder:
@@ -239,17 +357,25 @@ def run_medhavin(prompt: str):
         elif action == "read_file":
             final_output = read_file(path)
 
-        elif action == "run_python":
-            final_output = run_python(path)
+        elif action == "run_file":
+            final_output = run_file(path)
 
         elif action == "delete_file":
             final_output = delete_file_smart(path)
 
         elif action == "delete_folder":
+            print("RAW LLM OUTPUT:")
+            print(raw_output)
             final_output = delete_folder(path)
 
         elif action == "create_directory":
             final_output = create_directory(path)
+        elif action == "create_project":
+    # path format: project_name|language
+             project_name, language = path.split("|")
+             final_output = create_project_structure(project_name.strip(), language.strip())
+        elif action == "manage_dependencies":
+             final_output = manage_dependencies(path, content)
 
     return {
         "status": "completed",
